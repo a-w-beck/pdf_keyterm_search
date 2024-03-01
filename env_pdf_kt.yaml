@@ -1,0 +1,18 @@
+name: pdf_kt
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+
+  # - nltk=3.8
+  - pandas=2.2
+  # - pdfminer.six=20231228
+  # - pdftotext=2.2
+  - pypdf=3.17
+  # - spacy=3.7
+  # - transformers=4.38
+  
+  - spyder=5.5
+  - qtawesome=1.2.3  # spyder dep; v1.3.0 throws error
+
+  # ? pip install pymupdf
