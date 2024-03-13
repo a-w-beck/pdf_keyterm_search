@@ -1,4 +1,5 @@
-"""search a collection of PDFs for keyword hits"""
+"""search a collection of PDFs for keyterm hits"""
+
 from pathlib import Path
 from time import perf_counter as tpc
 
@@ -7,13 +8,14 @@ from pypdf import PdfReader
 
 path_proj = Path(__file__).parent
 
+
 # %% funcs
 def label_time(label, time_start):
     print(f'{label+", [sec]:":<40}{(tpc() - time_start):>10.1f}')
     
 def flatten(xs):
     for x in xs:
-        if isinstance(x, list):
+        if isinstance(x, (list, tuple)):
             yield from flatten(x)
         else:
             yield x
@@ -47,45 +49,71 @@ def search_page(
             hits.append([term, page_text.count(term)])
     return hits
 
-
-# %% keyword & pdf I/O
+# %% keyterm & pdf I/O
 path_docs = path_proj / 'docs'
 fpaths_pdf = list(path_docs.glob('**/*.pdf'))
 print(f'PDFs found: {len(fpaths_pdf)}')
 
-fname_kt_input = 'keyterms.csv'
-df_kw = pd.read_csv(path_proj / 'keywords.csv')
-kt_full = expand_keyterms(df_kw.term)  # list of key-terms
-kt_abbv = expand_keyterms(df_kw.abbv_or_alias)  # list of key-terms
-# kt_all = kt_full + kt_abbv
+fpath_kt = path_proj / 'keyterms.csv'
+df_kw = pd.read_csv(fpath_kt)
 
+kt_dict = {a: split_term_set(t)
+           for a,t in zip(df_kw.abbv_or_alias, df_kw.term)}
+kt_full = flatten(kt_dict.values())
+kt_abbv = kt_dict.keys()
+
+# pd.DataFrame approach
+# kt_full = expand_keyterms(df_kw.term)  # list of keyterms
+# kt_abbv = expand_keyterms(df_kw.abbv_or_alias)  # list of keyterms
 
 # %% search
-time_start = tpc()
+t_s = tpc()  # start time
 hits = []
 for fpath in fpaths_pdf:
     doc = PdfReader(fpath)
-    doc_name = fpath.name    
     for page_num, page in enumerate(doc.pages, start=1):
         page_text = page.extract_text()
         hits_abbv = search_page(kt_abbv, page_text, keep_case=True)
         hits_kt = search_page(kt_full, page_text)
         hits_page = hits_abbv + hits_kt
         if hits_page:
-            hits.extend([(doc_name, term, page_num, freq) 
+            hits.extend([(fpath, term, page_num, freq)
                          for term, freq in hits_page])        
-    label_time(f'Search time, {doc_name}', time_start)  # !!!: 8s per doc, all kw
+    label_time(f'Search time, {fpath.name}', t_s)
 
-# %%
-df = pd.DataFrame(data=hits, columns=['file', 'key_term', 'page_num', 'freq'])
-df.to_csv(path_proj / f'output_{fname_kt_input}', index=False)
+# TODO: cache doc-kt hits
 
-# pd.Series([y for (x, y) in kt_hits.keys]).value_counts()
-# set([y for (x, y, z) in kt_hits if z == "LCA"])
+# %% tidy metadata
+def get_first_docs_subdir(fpath):
+    return fpath.parent.relative_to(path_docs).parts[0].rstrip('s')
+
+df = (pd.DataFrame(hits, columns=['fpath', 'key_term', 'page_num', 'freq'])
+        .assign(fname=lambda _df: _df.fpath.apply(lambda f: f.name),
+                is_original=lambda _df: (_df.fpath.astype(str)
+                                                  .str.contains('Original')),
+                ftype=lambda _df: _df.fpath.apply(get_first_docs_subdir))
+        .drop(columns=['fpath']))
+
+# %% summarize
+kt_ord = list(flatten(kt_dict.items())) + ['All']
+df_summ = (df.pivot_table(values='freq', columns='key_term',
+                          aggfunc='sum', margins=True,
+                          index=['fname', 'ftype', 'is_original'])
+             .drop(index='All', level='fname')
+             .reindex(columns=kt_ord)  # reorder kt cols
+             .dropna(axis='columns', how='all')
+             .reset_index()
+             .sort_values(by=['ftype', 'All'], ascending=[True, False]))
+
+# %% write output
+fpath_out = path_proj / f'output_{fpath_kt.stem}.xlsx'
+with pd.ExcelWriter(fpath_out) as ew:
+    args = {'excel_writer': ew, 'index': False}
+    df_summ.to_excel(sheet_name='Summary', **args)
+    df.to_excel(sheet_name='Results', **args)
 
 
-
-# %% Future Improvements
+# %% future improvements
 
 # TODO: [speed] on doc read, tokenize each page 
     # search over token sets >>> substring search
@@ -101,7 +129,7 @@ df.to_csv(path_proj / f'output_{fname_kt_input}', index=False)
     # class doc_pdf: 
 
 
-# %% dict experiments
+# %% nested dict approaches
 
 # !!!: dict.update() bad w/ nested dict, overwrites via top-level key
 
